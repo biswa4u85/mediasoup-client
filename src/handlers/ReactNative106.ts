@@ -231,8 +231,13 @@ export class ReactNative106
 
 		// Free/dispose native MediaStream but DO NOT free/dispose native
 		// MediaStreamTracks (that is parent's business).
-		// @ts-expect-error --- Proprietary API in react-native-webrtc.
-		this._sendStream.release(/* releaseTracks */ false);
+		// This is the react-native-webrtc specific API for releasing MediaStream.
+		if (
+			this._sendStream &&
+			typeof (this._sendStream as any).release === 'function'
+		) {
+			(this._sendStream as any).release(/* releaseTracks */ false);
+		}
 
 		// Close RTCPeerConnection.
 		try {
@@ -489,17 +494,13 @@ export class ReactNative106
 		await this._pc.setLocalDescription(offer);
 
 		// We can now get the transceiver.mid.
-		// NOTE: We cannot read generated MID on iOS react-native-webrtc 111.0.0
-		// because transceiver.mid is not available until setRemoteDescription()
-		// is called, so this is best effort.
-		// Issue: https://github.com/react-native-webrtc/react-native-webrtc/issues/1404
-		// NOTE: So let's fill MID in sendingRtpParameters later.
-		// NOTE: This is fixed in react-native-webrtc 111.0.3.
+		// NOTE: In react-native-webrtc 124.0.0, transceiver.mid should be available
+		// after setLocalDescription(), but we keep the fallback for compatibility.
 		let localId = transceiver.mid ?? undefined;
 
 		if (!localId) {
 			logger.warn(
-				'send() | missing transceiver.mid (bug in react-native-webrtc, using a workaround'
+				'send() | missing transceiver.mid, using fallback (should be available in react-native-webrtc 124.0.0)'
 			);
 		}
 
@@ -581,20 +582,29 @@ export class ReactNative106
 
 		await this._pc.setRemoteDescription(answer);
 
-		// Follow up of iOS react-native-webrtc 111.0.0 issue told above. Now yes,
-		// we can read generated MID (if not done above) and fill sendingRtpParameters.
-		// NOTE: This is fixed in react-native-webrtc 111.0.3 so this block isn't
-		// needed starting from that version.
+		// Ensure MID is set after setRemoteDescription (should be available in 124.0.0)
 		if (!localId) {
-			localId = transceiver.mid!;
-			sendingRtpParameters.mid = localId;
+			const mid = transceiver.mid;
+			if (mid) {
+				localId = mid;
+				sendingRtpParameters.mid = localId;
+			} else {
+				logger.warn(
+					'send() | transceiver.mid still not available after setRemoteDescription'
+				);
+				// Use a fallback ID if MID is still not available
+				localId = `mid-${Date.now()}`;
+				sendingRtpParameters.mid = localId;
+			}
 		}
 
 		// Store in the map.
-		this._mapMidTransceiver.set(localId, transceiver);
+		if (localId) {
+			this._mapMidTransceiver.set(localId, transceiver);
+		}
 
 		return {
-			localId,
+			localId: localId!,
 			rtpParameters: sendingRtpParameters,
 			rtpSender: transceiver.sender,
 		};
